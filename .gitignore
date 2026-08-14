@@ -1,5 +1,25 @@
-.env
-__pycache__/
-venv/
+transcripts/
 *.json
 !package.json
+
+# secrets
+.env
+
+# personal data — these contain my actual brain dumps
+recordings/
+transcripts/
+items/
+runs/
+
+# python
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
