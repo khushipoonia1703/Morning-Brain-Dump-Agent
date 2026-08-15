@@ -21,7 +21,7 @@ from openai import OpenAI
 from rich.console import Console
 from rich.table import Table
 
-MODEL = "gpt-5.6"
+MODEL = "gpt-5.6-luna"
 
 TRANSCRIPTS_DIR = Path("transcripts")
 ITEMS_DIR = Path("items")

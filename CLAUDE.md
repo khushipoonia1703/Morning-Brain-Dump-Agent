@@ -20,7 +20,7 @@ Do not turn stage 2 into an agent. Do not turn stage 3 into a fixed procedure. T
 - Python 3.11+
 - `openai` — transcription, classification, and the research agent
   - Transcription: `whisper-1`
-  - Reasoning: `gpt-5.6` — **verify the exact model string against https://platform.openai.com/docs/models before building.** If `gpt-5.6` is not valid, use the current flagship or its cost-balanced variant. Never silently fall back to an older model.
+  - Reasoning: `gpt-5.6-luna` for classification (stage 2), `gpt-5.6-terra` for the research agent (stage 3) — **verify the exact model strings against https://platform.openai.com/docs/models before building.** If either is not valid, use the current equivalent tier. Never silently fall back to an older model.
 - `sounddevice` + `soundfile` — microphone capture
 - `requests` — URL validation
 - `notion-client` — publishing

@@ -119,7 +119,7 @@ Calling the whole system an agent would be overselling it. Calling it a script w
 | Language | Python 3.11+, no framework | Readable; I have to explain every line live |
 | Audio capture | `sounddevice` + `soundfile` | No compiler needed on Windows, unlike `pyaudio` |
 | Transcription | OpenAI Whisper (`whisper-1`) | Accurate on technical speech; no local GPU needed |
-| Reasoning | OpenAI GPT | Structured JSON output, server-side tools |
+| Reasoning | OpenAI GPT (`gpt-5.6-luna` classify, `gpt-5.6-terra` agent) | Structured JSON output, server-side tools |
 | Search | OpenAI `web_search` tool, Responses API | Built in — no second search provider or key |
 | Validation | `requests` | Plain HTTP check; no library needed for this |
 | Output | `notion-client` | Official SDK |
