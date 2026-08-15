@@ -119,14 +119,14 @@ Calling the whole system an agent would be overselling it. Calling it a script w
 | Language | Python 3.11+, no framework | Readable; I have to explain every line live |
 | Audio capture | `sounddevice` + `soundfile` | No compiler needed on Windows, unlike `pyaudio` |
 | Transcription | OpenAI Whisper (`whisper-1`) | Accurate on technical speech; no local GPU needed |
-| Reasoning | OpenAI GPT (`gpt-5.6-luna` classify, `gpt-5.6-terra` agent) | Structured JSON output, server-side tools |
-| Search | OpenAI `web_search` tool, Responses API | Built in — no second search provider or key |
+| Reasoning | OpenAI GPT (`gpt-5.6-luna` classify, `gpt-5.6-terra` agent) | Structured JSON output; function-calling for the agent loop |
+| Search | Tavily Search API (`requests.post`) | Direct HTTPS call — no model in the search path, so no nested model cost per search |
 | Validation | `requests` | Plain HTTP check; no library needed for this |
 | Output | `notion-client` | Official SDK |
 | Display | `rich` | Readable terminal tables while testing |
 | Secrets | `python-dotenv` | Keys in `.env`, never in code |
 
-**One paid API key powers the entire system.** Notion needs a free internal integration token, which is auth but not a cost.
+**One *paid* API key powers the system: `OPENAI_API_KEY`.** Web search needs a `TAVILY_API_KEY` (free tier) and Notion needs a free internal integration token — both are auth, not cost.
 
 ## 3.4 State
 
@@ -199,7 +199,7 @@ Different items legitimately take different numbers of steps. A narrow topic mig
 
 **Two rules the code enforces, not the model:**
 
-1. URLs come from the search tool's citation annotations, never from the model's prose. This is where hallucinated links would otherwise re-enter.
+1. URLs come only from code-controlled sources — the Tavily search results, and the anchor links `fetch_page` harvests off a fetched page — never from the model's prose. Both feed the `self.seen` whitelist that `submit` is checked against. This is where hallucinated links would otherwise re-enter.
 2. Every URL is fetched and validated before it can be published. If validation kills a link and the model still has budget, the failure is handed back so it can search again — validation failure is a recovery path, not a dead end.
 
 Validation records three outcomes separately: `ok`, `dead`, and `unverified` (403 — bot-blocked, not necessarily broken). Only `ok` links publish. Keeping `unverified` separate is what stops the drop-rate metric from lying to me.
@@ -284,13 +284,15 @@ Research is different. "Find good, current resources" has no fixed procedure. Wh
 
 **What would change my mind:** transcripts longer than about five minutes, where context dilution starts to hurt. Then I'd chunk first.
 
-## 6.4 Single vendor for the whole pipeline
+## 6.4 One vendor for reasoning, a dedicated API for search
 
 **Alternative:** pick the strongest model for each stage across providers.
 
-**Why not:** one API key, one SDK, one billing account, one set of error semantics. On a two-day build, integration surface is a bigger risk than marginal model quality. Transcription had to be OpenAI regardless — there is no Anthropic speech model — so going single-vendor removed a dependency rather than adding one.
+**Why not:** one API key, one SDK, one billing account, one set of error semantics. On a two-day build, integration surface is a bigger risk than marginal model quality. Transcription had to be OpenAI regardless — there is no Anthropic speech model — so keeping reasoning in-vendor removed a dependency rather than adding one.
 
-**Tradeoff:** vendor lock-in, and I can't pick the best model per stage.
+**Where I broke my own rule:** search. I originally kept search in-vendor too, using OpenAI's server-side `web_search` tool. But that routed every search through an extra model call — a nested `responses.create` carrying the web-search tool — so a search-heavy item paid for the agent's reasoning turns *and* a model call per search. Moving search to a direct Tavily HTTPS call deleted that hidden cost: the query now goes straight to a search API and the URLs come back as plain data, with no model in the loop. Reasoning and transcription stay OpenAI-only.
+
+**Tradeoff:** a second key and a second billing surface, plus some vendor lock-in on reasoning. Accepted because the per-search model cost was the bigger problem.
 
 **What would change my mind:** classification accuracy plateauing below what I need. Because stages hand off through JSON files, swapping the model behind any single stage is contained.
 
@@ -300,7 +302,7 @@ Research is different. "Find good, current resources" has no fixed procedure. Wh
 
 **Why not:** language models produce URLs that are structurally perfect and completely dead. A single 404 forces me to verify every other link on the page, and at that point the system has saved me nothing. Validation isn't a feature, it's the correctness backbone.
 
-This is also why URLs are pulled from citation annotations rather than the model's text. If I parsed links out of the prose, I'd have rebuilt the hallucination problem behind a validation step that only catches the ones that happen to be dead.
+This is also why URLs are pulled from real search results — and from links harvested off pages the agent fetched — rather than the model's text. If I parsed links out of the prose, I'd have rebuilt the hallucination problem behind a validation step that only catches the ones that happen to be dead.
 
 **What would change my mind:** nothing about validating. Only *how* — caching validated URLs so repeated topics aren't re-checked daily.
 
@@ -346,7 +348,7 @@ That was a conscious rule, not a convenience. **How much autonomy an agent gets 
 |---|---|---|
 | Technical terms mistranscribed | Speech recognition on domain vocabulary | Normalization against a known-terms list, before search |
 | Compound items merged or over-split | "and" is ambiguous in spoken language | Segmentation prompted with examples of both error directions |
-| Hallucinated resource links | Model generating URLs from recall | URLs taken only from citation annotations, then HTTP-verified |
+| Hallucinated resource links | Model generating URLs from recall | URLs taken only from search results and harvested page links, then HTTP-verified |
 | Good links wrongly dropped | Sites returning 403 to a default user agent | Browser UA, GET not HEAD, 403 recorded as `unverified` not `dead` |
 | Agent loops without finishing | No natural stopping point on a vague item | Hard budget of 8 tool calls / 3 searches per item |
 | Fewer than 3 resources survive | Validation drops candidates | Publish what survived, mark `incomplete` — never pad with unverified links |

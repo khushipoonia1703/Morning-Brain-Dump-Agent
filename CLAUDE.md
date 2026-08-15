@@ -22,21 +22,23 @@ Do not turn stage 2 into an agent. Do not turn stage 3 into a fixed procedure. T
   - Transcription: `whisper-1`
   - Reasoning: `gpt-5.6-luna` for classification (stage 2), `gpt-5.6-terra` for the research agent (stage 3) — **verify the exact model strings against https://platform.openai.com/docs/models before building.** If either is not valid, use the current equivalent tier. Never silently fall back to an older model.
 - `sounddevice` + `soundfile` — microphone capture
-- `requests` — URL validation
+- `requests` — web search (Tavily), page fetching, and URL validation
 - `notion-client` — publishing
 - `rich` — terminal tables
 - `python-dotenv` — secrets
 
-Web search uses OpenAI's server-side web search tool via the **Responses API** (`client.responses.create`), NOT Chat Completions.
+Web search uses the **Tavily Search API** via a direct HTTPS call (`requests.post` to `https://api.tavily.com/search`), NOT a model call. `search_web` sends the query to Tavily and reads the result URLs straight from the JSON response — no model sits between the query and the URLs, which preserves the provenance guarantee and avoids paying for a nested model call on every search.
 
-- The tool type is `{"type": "web_search"}`. Do **not** use `web_search_preview` — that is the legacy tool and lacks current controls.
-- Do NOT add Tavily, Serper, SerpAPI, or any other search provider. No extra search key is needed.
+- `fetch_page` is a second source of submittable URLs: it harvests the anchor links off a page the agent fetched, so the agent can reach pages a search did not return directly.
+- A `TAVILY_API_KEY` is required. Tavily has a free tier, so it need not be a paid dependency, but the key must be present.
 
 **No frameworks.** No LangChain, no LangGraph, no CrewAI, no agent libraries. Plain Python and direct SDK calls. The agent loop in stage 3 is a `while` loop I write myself — that is deliberate, because I have to explain it live.
 
 ### Keys
 
-Only one **paid** API key is required: `OPENAI_API_KEY`.
+`OPENAI_API_KEY` is the one **paid** key — it powers transcription, classification, and the research agent.
+
+`TAVILY_API_KEY` is required for web search. Tavily has a free tier, so it need not be a paid dependency, but the key must be present — `research.py` exits with a clear message if it is missing.
 
 Notion additionally needs a **free** internal integration token (`NOTION_API_KEY`) and a parent page ID. That is not a paid dependency, but the code does require it — do not write code that assumes Notion needs no auth.
 
@@ -196,7 +198,7 @@ Do NOT write a fixed sequence of search → judge → validate. Give the model *
 | Tool | Signature | Returns |
 |---|---|---|
 | `search_web` | `(query: str)` | Candidate results: title, URL, snippet |
-| `fetch_page` | `(url: str)` | Page title and first ~2000 chars of text |
+| `fetch_page` | `(url: str)` | Page title, first ~2000 chars of text, and links found on the page (which become submittable) |
 | `submit` | `(video_url, article_urls: list[str], notes: str)` | Ends the loop for this item |
 
 The model chooses which tool to call and when. Different items will legitimately take different numbers of steps — a narrow topic might need one search; an unbounded one might fetch a roadmap page first to pick an entry point, then search that narrower thing.
@@ -208,7 +210,7 @@ The model chooses which tool to call and when. Different items will legitimately
 
 ### Getting URLs — this is the correctness backbone
 
-**NEVER take a URL from the model's prose.** The web search tool returns URLs as citation annotations on the response. `search_web` must extract URLs from those annotations. If you find yourself regex-ing URLs out of `output_text`, stop — that is model-generated output and defeats the entire point of this stage.
+**NEVER take a URL from the model's prose.** Submittable URLs come from exactly two code-controlled sources: the results `search_web` gets back from the Tavily API, and the anchor links `fetch_page` harvests off a page it fetched. Both are written into the `self.seen` whitelist, and `submit` rejects any URL that is not in it. If you find yourself pulling URLs out of the model's text, stop — that is model-generated output and defeats the entire point of this stage.
 
 ### URL validation
 
@@ -296,7 +298,7 @@ These were deliberately excluded. If you think one is needed, ask me first.
 ## Rules
 
 - **One stage at a time.** Build it, stop, wait for me to test and commit.
-- **Never invent URLs.** They come from search citation annotations, then pass HTTP validation.
+- **Never invent URLs.** They come from Tavily search results or links harvested off a fetched page, then pass HTTP validation.
 - **Secrets live in `.env` only.** Never hardcode a key, never print one, never write one to a run file.
 - Keep it simple and readable. I have to explain every line of this code on a live screen share — if a piece of code would take me more than a minute to explain, it's too clever.
 - Prefer the standard library. Ask before adding a package not in `requirements.txt`.

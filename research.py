@@ -47,6 +47,22 @@ TAVILY_MAX_RESULTS = 10
 # whitelist, so a link-heavy page cannot balloon self.seen.
 MAX_LINKS_PER_PAGE = 10
 
+# How many articles we are trying to keep per item, alongside one video.
+ARTICLES_WANTED = 1
+
+# Stop reading a fetched page after this much. A harvested link can point at a
+# PDF or a video file, and response.text would otherwise pull all of it.
+MAX_PAGE_BYTES = 500_000
+
+# An anchor shorter than this is almost always chrome ("Home", "Log in", "Docs").
+MIN_ANCHOR_TEXT = 15
+
+# URL paths that are site furniture rather than content.
+CHROME_PATHS = re.compile(
+    r"/(login|signup|sign-up|pricing|about|contact|privacy|terms)(/|$)",
+    re.IGNORECASE,
+)
+
 ITEMS_DIR = Path("items")
 RUNS_DIR = Path("runs")
 
@@ -54,6 +70,10 @@ RUNS_DIR = Path("runs")
 # free to use them in any order and may finish well under them.
 MAX_TOOL_CALLS = 8
 MAX_SEARCHES = 3
+
+# How many times a failed submit is handed back before the partial set is
+# accepted. Stops an unfillable slot from consuming the whole call budget.
+MAX_SUBMIT_RETRIES = 2
 
 # A real browser UA. The default python-requests UA gets 403'd by YouTube and
 # plenty of docs sites, which would drop good links and corrupt the drop rate.
@@ -72,10 +92,22 @@ morning brain dump.
 You have three tools: search_web, fetch_page, and submit.
 
 YOU decide which tools to use, in what order, and how many times. There is no
-required sequence. A narrow, well-known topic may need a single search. A vague
-or broad one may be worth fetching a page to see what is actually on it before
-you search again for something more specific. Use your judgement about what
-this particular item needs.
+required sequence.
+
+Most items are done in two calls: one search_web, then submit. The first result
+set usually already contains a good video and a good article - prefer picking
+both from it. Spend more than that only when the item actually needs it: a
+second search when the first genuinely lacks a video OR an article, and
+fetch_page when a result is too ambiguous to judge from its title and snippet,
+or when a broad topic needs a look at what a page really covers before you can
+narrow it.
+
+Do NOT use fetch_page to check whether a link works. Every URL you submit is
+fetched and checked by the system after you submit, so fetching to verify is
+wasted effort. Judge relevance from the title and snippet.
+
+Finishing early is a good outcome, not a lazy one. Unspent budget is not
+wasted budget.
 
 What counts as a good result:
 - One video. Prefer YouTube. It should teach the thing, not advertise it.
@@ -96,8 +128,9 @@ Hard rules:
 - Call submit when you are done. If you cannot find both good resources,
   submit what you do have rather than submitting nothing.
 
-Budget for this item: {MAX_TOOL_CALLS} tool calls total, of which at most
-{MAX_SEARCHES} may be search_web. You will be told what remains after each call.
+Hard limits for this item: at most {MAX_TOOL_CALLS} tool calls, of which at
+most {MAX_SEARCHES} may be search_web. These are ceilings for a difficult item,
+not targets. A straightforward item should finish well under them.
 """
 
 TOOLS = [
@@ -237,6 +270,7 @@ class ItemRun:
         self.item = item
         self.calls_used = 0
         self.searches_used = 0
+        self.submit_retries = 0
         self.done = False
 
         # url -> title. Populated ONLY by search_web (search API results) and
@@ -244,9 +278,19 @@ class ItemRun:
         # This is the whitelist that submit is checked against.
         self.seen = {}
 
+        # Counts ONLY the URLs search_web put into self.seen. Kept separate
+        # because self.seen also holds harvested anchors, which would inflate
+        # the "URLs found by search" metric.
+        self.search_urls_found = 0
+
         # Resources that have already passed validation, kept across retries.
         self.kept_video = None
         self.kept_articles = []
+
+        # url -> (status, detail). A resubmitted URL is answered from here
+        # rather than re-fetched, so validation_log holds one row per distinct
+        # URL and the drop rate is not inflated by retries.
+        self.validated = {}
 
         self.validation_log = []
         self.notes = ""
@@ -287,12 +331,17 @@ class ItemRun:
             )
 
         results = []
+        duplicates = 0
         for hit in response.json().get("results", []):
             url = hit.get("url")
-            if not url or url in self.seen:
+            if not url:
+                continue
+            if url in self.seen:
+                duplicates += 1
                 continue
             title = hit.get("title") or url
             self.seen[url] = title
+            self.search_urls_found += 1
             results.append({
                 "title": title,
                 "url": url,
@@ -300,6 +349,13 @@ class ItemRun:
             })
 
         if not results:
+            if duplicates:
+                # Telling the model "no results" here would send it rephrasing
+                # a query that worked. It repeated itself.
+                return (
+                    f"All {duplicates} results were pages you already have. "
+                    "Use those, or search for something more specific."
+                )
             return "No results with citable URLs. Try a different query."
         return json.dumps(results, indent=2)
 
@@ -319,10 +375,31 @@ class ItemRun:
                 headers={"User-Agent": BROWSER_UA},
                 allow_redirects=True,
                 timeout=10,
+                stream=True,
             ) as response:
                 if response.status_code != 200:
                     return f"Fetch returned HTTP {response.status_code}."
-                html = response.text
+
+                # A harvested link can point at a PDF, an image or a video.
+                # Only read things that are actually text.
+                content_type = response.headers.get("Content-Type", "")
+                if "html" not in content_type.lower() and "text" not in content_type.lower():
+                    return (
+                        f"Not a readable page (Content-Type: "
+                        f"{content_type or 'unknown'}). Choose a different URL."
+                    )
+
+                # Read at most MAX_PAGE_BYTES so one huge file cannot stall
+                # the run.
+                chunks, total = [], 0
+                for chunk in response.iter_content(chunk_size=8192):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= MAX_PAGE_BYTES:
+                        break
+                html = b"".join(chunks).decode(
+                    response.encoding or "utf-8", errors="replace"
+                )
                 final_url = response.url
         except requests.RequestException as e:
             return f"Fetch failed: {type(e).__name__}."
@@ -343,23 +420,43 @@ class ItemRun:
         return json.dumps(payload, indent=2) + note
 
     def harvest_links(self, html, base_url):
-        """Add this page's anchor hrefs to the whitelist.
+        """Add this page's most content-looking anchor hrefs to the whitelist.
 
         The URLs come off the page itself, so they carry the same provenance
         guarantee as a search result: the model did not author them.
+
+        Taking the first N anchors would collect the logo, the nav bar and the
+        cookie banner. So every anchor is considered, obvious site chrome is
+        dropped, and the survivors are ranked by anchor-text length — a rough
+        proxy for "this is a link to real content", which is good enough here.
         """
-        discovered = []
+        candidates = []
         for href, anchor_text in re.findall(
             r"(?is)<a\b[^>]*\bhref\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", html
         ):
-            if len(discovered) >= MAX_LINKS_PER_PAGE:
-                break
-            absolute = urljoin(base_url, href.strip())
+            href = href.strip()
+            if href.startswith("#"):
+                continue
+
+            absolute = urljoin(base_url, href)
             if urlparse(absolute).scheme not in ("http", "https"):
                 continue
             if absolute in self.seen:
                 continue
-            text = strip_html(anchor_text)[:120] or absolute
+
+            text = strip_html(anchor_text)[:120]
+            if len(text) < MIN_ANCHOR_TEXT:
+                continue
+            if CHROME_PATHS.search(urlparse(absolute).path):
+                continue
+
+            candidates.append((absolute, text))
+
+        # Longest anchor text first, then keep the cap.
+        candidates.sort(key=lambda pair: len(pair[1]), reverse=True)
+
+        discovered = []
+        for absolute, text in candidates[:MAX_LINKS_PER_PAGE]:
             self.seen[absolute] = text
             discovered.append((absolute, text))
         return discovered
@@ -367,16 +464,11 @@ class ItemRun:
     # -- tool 3 -------------------------------------------------------------
 
     def submit(self, video_url, article_urls, notes, narrowed_to):
-        self.notes = notes or self.notes
-        # narrowed_to drives the "broad topic - start here" note on the page, so
-        # it is only meaningful for an unbounded item. The model will sometimes
-        # volunteer one anyway; ignore it.
-        if self.item.get("scope") == "unbounded":
-            self.narrowed_to = narrowed_to or self.narrowed_to
-
         candidates = ([video_url] if video_url else []) + list(article_urls or [])
 
         # Rule 1: a URL the model did not get from search cannot be published.
+        # Checked before anything is recorded, so a rejected submit leaves no
+        # trace of itself on the item.
         invented = [u for u in candidates if u not in self.seen]
         if invented:
             return (
@@ -386,20 +478,44 @@ class ItemRun:
                 + ". Only submit URLs from a search result or from a fetched page."
             )
 
+        self.notes = notes or self.notes
+        # narrowed_to drives the "broad topic - start here" note on the page, so
+        # it is only meaningful for an unbounded item. The model will sometimes
+        # volunteer one anyway; ignore it.
+        if self.item.get("scope") == "unbounded":
+            self.narrowed_to = narrowed_to or self.narrowed_to
+
         failures = []
         for url in candidates:
-            status, detail = validate_url(url)
-            self.validation_log.append({"url": url, "status": status, "detail": str(detail)})
-            console.print(f"      validate {status:<10} {url}", style="dim")
+            if url in self.validated:
+                # Already checked on an earlier submit. Reuse the verdict rather
+                # than re-fetching it and logging it twice.
+                status, detail = self.validated[url]
+            else:
+                status, detail = validate_url(url)
+                self.validated[url] = (status, detail)
+                self.validation_log.append(
+                    {"url": url, "status": status, "detail": str(detail)}
+                )
+                console.print(f"      validate {status:<10} {url}", style="dim")
 
-            if status != "ok":
+            # Only a dead link forces a replacement. A 403 means bot-blocked,
+            # not broken - keep it, and warn. The run file still records it as
+            # "unverified" in validation, so the metric stays honest.
+            if status == "dead":
                 failures.append(f"{url} ({status}, {detail})")
                 continue
+            if status == "unverified":
+                console.print(f"      [yellow]keeping unverified (403) {url}[/]")
 
             resource = {"url": url, "title": self.seen[url]}
             if url == video_url and self.kept_video is None:
                 self.kept_video = resource
-            elif url != video_url and url not in [a["url"] for a in self.kept_articles]:
+            elif (
+                url != video_url
+                and url not in [a["url"] for a in self.kept_articles]
+                and len(self.kept_articles) < ARTICLES_WANTED
+            ):
                 self.kept_articles.append(resource)
 
         if self.is_complete():
@@ -409,14 +525,28 @@ class ItemRun:
         # Rule 2: validation failure is a recovery path, not a dead end.
         # Hand the failure back while there is still budget to act on it.
         if self.calls_used < MAX_TOOL_CALLS:
+            self.submit_retries += 1
+
+            # Some slots are genuinely unfillable. Without this, the item burns
+            # every remaining call re-submitting the same impossible set.
+            if self.submit_retries >= MAX_SUBMIT_RETRIES:
+                self.done = True
+                return (
+                    "Accepted with what was verified - no retries left for this "
+                    "item. You are finished with it."
+                )
+
             message = ["Some resources did not survive validation."]
             if failures:
                 message.append("Failed: " + "; ".join(failures))
             message.append(
                 f"Verified so far: {'1' if self.kept_video else '0'} video, "
-                f"{len(self.kept_articles)} of 1 article."
+                f"{len(self.kept_articles)} of {ARTICLES_WANTED} article."
             )
-            message.append("Find replacements for what is missing, then submit again.")
+            message.append(
+                f"Find replacements for what is missing, then submit again "
+                f"({MAX_SUBMIT_RETRIES - self.submit_retries} retries left)."
+            )
             return " ".join(message)
 
         self.done = True
@@ -425,7 +555,7 @@ class ItemRun:
     # -- plumbing -----------------------------------------------------------
 
     def is_complete(self):
-        return self.kept_video is not None and len(self.kept_articles) >= 1
+        return self.kept_video is not None and len(self.kept_articles) >= ARTICLES_WANTED
 
     def dispatch(self, call):
         """Run whichever tool the model chose and return its output as a string."""
@@ -449,15 +579,19 @@ class ItemRun:
         else:
             output = f"Unknown tool: {call.name}"
 
+        # Only mention the budget once it is nearly gone. Reporting what is left
+        # after every call reads as a target to spend - in the first run all 5
+        # items used exactly 3 of 3 searches.
         remaining = MAX_TOOL_CALLS - self.calls_used
-        searches_left = MAX_SEARCHES - self.searches_used
-        return f"{output}\n\n[{remaining} tool calls left, {searches_left} searches left]"
+        if remaining <= 2:
+            return f"{output}\n\n[only {remaining} tool calls left - submit what you have]"
+        return output
 
     def result(self):
         resources = []
         if self.kept_video:
             resources.append({"kind": "video", **self.kept_video})
-        for article in self.kept_articles[:1]:
+        for article in self.kept_articles[:ARTICLES_WANTED]:
             resources.append({"kind": "article", **article})
 
         return {
@@ -468,7 +602,8 @@ class ItemRun:
             "notes": self.notes,
             "resources": resources,
             "validation": self.validation_log,
-            "urls_found": len(self.seen),
+            "urls_found": self.search_urls_found,
+            "candidates_seen": len(self.seen),
             "tool_calls_used": self.calls_used,
             "searches_used": self.searches_used,
         }
@@ -604,6 +739,7 @@ def print_report(results, stats):
     drop_rate = (stats["dead"] / validated * 100) if validated else 0.0
     console.print("\n[bold]Validation drop rate[/]")
     console.print(f"  URLs found by search : {stats['found']}")
+    console.print(f"  candidates seen      : {stats.get('candidates_seen', 0)}")
     console.print(f"  URLs validated       : {validated}")
     console.print(f"  ok                   : {stats['ok']}")
     console.print(f"  dead                 : {stats['dead']}")
@@ -629,6 +765,11 @@ def main():
     client = OpenAI(api_key=api_key)
 
     items = json.loads(items_path.read_text(encoding="utf-8"))
+    if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+        print(f"{items_path} is not an items file.")
+        print("Expected the JSON array written by classify.py, e.g. items/items_*.json.")
+        sys.exit(1)
+
     to_research = [i for i in items if i.get("needs_resources")]
     noise = [i for i in items if i.get("type") == "noise"]
     skipped = [i for i in items if not i.get("needs_resources") and i.get("type") != "noise"]
@@ -678,6 +819,7 @@ def main():
     # "found" counts every distinct URL search surfaced, whether the model
     # chose to submit it or not.
     stats["found"] = sum(i.get("urls_found", 0) for i in results)
+    stats["candidates_seen"] = sum(i.get("candidates_seen", 0) for i in results)
 
     print_report(results, stats)
 

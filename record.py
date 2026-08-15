@@ -69,7 +69,7 @@ def record_until_enter():
             time.sleep(0.1)
         elapsed = time.time() - started
 
-    print(f"\r  {elapsed:5.1f}s — stopped.")
+    print(f"\r  {elapsed:5.1f}s - stopped.")
 
     if not blocks:
         print("No audio was captured. Nothing to save.")
