@@ -104,7 +104,7 @@ Calling the whole system an agent would be overselling it. Calling it a script w
         │  runs/run_*.json
         ▼
 ┌───────────────────────────┐
-│ STAGE 4+5  publish.py     │   build Notion blocks
+│ STAGE 4+5  publish.py     │   build Notion blocks     
 │ Compose + Publish         │   → create page via API
 └───────────────────────────┘   WORKFLOW
         │
@@ -310,7 +310,7 @@ This is also why URLs are pulled from real search results — and from links har
 
 **What would change my mind:** classification accuracy plateauing below what I need. Because stages hand off through JSON files, swapping the model behind any single stage is contained.
 
-## 6.7 One LLM call for normalize + segment + classify
+## 6.7   One LLM call for normalize + segment + classify
 
 **Alternative:** separate calls per stage, or one call per item.
 
