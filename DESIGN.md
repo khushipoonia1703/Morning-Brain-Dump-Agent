@@ -276,15 +276,29 @@ Research is different. "Find good, current resources" has no fixed procedure. Wh
 
 **What would change my mind:** multiple agents needing to hand off to each other, or a genuine need for durable mid-run checkpointing.
 
-## 6.3 One LLM call for normalize + segment + classify
 
-**Alternative:** separate calls per stage, or one call per item.
+## 6.3 Real search plus URL validation, never model recall
 
-**Why not:** these tasks are interdependent. Recognising that a stray "Ten" is noise requires seeing the sentence around it. Splitting a compound item requires the full context of both halves. Isolating the stages would remove exactly the context needed to do them correctly.
+**Alternative:** ask the model directly for good resources.
 
-**What would change my mind:** transcripts longer than about five minutes, where context dilution starts to hurt. Then I'd chunk first.
+**Why not:** language models produce URLs that are structurally perfect and completely dead. A single 404 forces me to verify every other link on the page, and at that point the system has saved me nothing. Validation isn't a feature, it's the correctness backbone.
 
-## 6.4 One vendor for reasoning, a dedicated API for search
+This is also why URLs are pulled from real search results — and from links harvested off pages the agent fetched — rather than the model's text. If I parsed links out of the prose, I'd have rebuilt the hallucination problem behind a validation step that only catches the ones that happen to be dead.
+
+**What would change my mind:** nothing about validating. Only *how* — caching validated URLs so repeated topics aren't re-checked daily.
+
+
+## 6.4 Notion as the output surface
+
+**Alternative:** a custom web app, or a daily email.
+
+**Why not:** zero interface to build, already where I work, mobile access free. The output is a document I read, and a document is the right shape for that.
+
+**Tradeoff:** coupled to Notion's block format, and the page is effectively read-only — checking something off doesn't feed back into the system.
+
+**What would change my mind:** the moment the agent needs to *react* to my progress. Then I need real state, and Notion becomes a sync problem instead of a shortcut.
+
+## 6.5 One vendor for reasoning, a dedicated API for search
 
 **Alternative:** pick the strongest model for each stage across providers.
 
@@ -296,43 +310,22 @@ Research is different. "Find good, current resources" has no fixed procedure. Wh
 
 **What would change my mind:** classification accuracy plateauing below what I need. Because stages hand off through JSON files, swapping the model behind any single stage is contained.
 
-## 6.5 Real search plus URL validation, never model recall
+## 6.7 One LLM call for normalize + segment + classify
 
-**Alternative:** ask the model directly for good resources.
+**Alternative:** separate calls per stage, or one call per item.
 
-**Why not:** language models produce URLs that are structurally perfect and completely dead. A single 404 forces me to verify every other link on the page, and at that point the system has saved me nothing. Validation isn't a feature, it's the correctness backbone.
+**Why not:** these tasks are interdependent. Recognising that a stray "Ten" is noise requires seeing the sentence around it. Splitting a compound item requires the full context of both halves. Isolating the stages would remove exactly the context needed to do them correctly.
 
-This is also why URLs are pulled from real search results — and from links harvested off pages the agent fetched — rather than the model's text. If I parsed links out of the prose, I'd have rebuilt the hallucination problem behind a validation step that only catches the ones that happen to be dead.
+**What would change my mind:** transcripts longer than about five minutes, where context dilution starts to hurt. Then I'd chunk first.
 
-**What would change my mind:** nothing about validating. Only *how* — caching validated URLs so repeated topics aren't re-checked daily.
-
-## 6.6 Three resources per item, in fixed roles
+## 6.8 Two resources per item, in fixed roles
 
 **Alternative:** return everything relevant that was found.
 
-**Why not:** the problem I'm solving is overwhelm. Twenty links reproduce the paralysis I started with — the system would convert an unactionable thought into an unactionable reading list. One video and two articles is a starting path rather than a pile.
+**Why not:** the problem I'm solving is overwhelm. Twenty links reproduce the paralysis I started with — the system would convert an unactionable thought into an unactionable reading list. One video and one article is a starting path rather than a pile.
 
-**What would change my mind:** if the three were consistently at the wrong level for me. The fix there is personalization, not volume.
+**What would change my mind:** if the two were consistently at the wrong level for me. The fix there is personalization, not volume.
 
-## 6.7 Reminders are classified, not scheduled
-
-**Alternative:** parse spoken times and fire notifications.
-
-**Why not:** capturing the time costs one field. Acting on it costs a subsystem — cron, delivery, timezones, a process that has to be running. A scheduler is infrastructure, not intelligence, and it would have consumed the build time the research loop needed.
-
-There's a second reason. When I recorded my actual brain dump, it contained **zero** time-bound items. I had designed around imagined usage and my own speech contradicted it. So reminders exist as a class because sometimes I do say "call Sam at six" — but they render as a line of text in a section, and nothing fires.
-
-**What would change my mind:** evidence from real usage that items are missed at the *acting* stage rather than the *starting* stage.
-
-## 6.8 Notion as the output surface
-
-**Alternative:** a custom web app, or a daily email.
-
-**Why not:** zero interface to build, already where I work, mobile access free. The output is a document I read, and a document is the right shape for that.
-
-**Tradeoff:** coupled to Notion's block format, and the page is effectively read-only — checking something off doesn't feed back into the system.
-
-**What would change my mind:** the moment the agent needs to *react* to my progress. Then I need real state, and Notion becomes a sync problem instead of a shortcut.
 
 ## 6.9 Autonomy matched to reversibility
 
@@ -397,4 +390,6 @@ Each stage runs independently against files on disk, resolving the most recent f
 - **Resource feedback.** Track which links I open; weight future selection toward sources I actually use. This is the one that would most improve output quality, because right now the agent has no signal at all.
 - **Learned vocabulary.** Build the known-terms list from my own transcript history instead of typing it.
 - **Local transcription.** `faster-whisper` on-device — brain dumps are personal, and this removes the only step that sends my voice to a third party.
-- **Evaluation harness.** Labelled transcripts with expected outputs, so prompt changes can be measured instead of eyeballed.
+- **Evaluation harness.** Labelled transcripts with expected outputs, so prompt changes can be measured instead of eyeballed.c
+
+
