@@ -346,16 +346,15 @@ That was a conscious rule, not a convenience. **How much autonomy an agent gets 
 
 | Failure | Cause | Handling |
 |---|---|---|
-| Technical terms mistranscribed | Speech recognition on domain vocabulary | Normalization against a known-terms list, before search |
+|- Technical terms mistranscribed | Speech recognition on domain vocabulary | Normalization against a known-terms list, before search |
 | Compound items merged or over-split | "and" is ambiguous in spoken language | Segmentation prompted with examples of both error directions |
-| Hallucinated resource links | Model generating URLs from recall | URLs taken only from search results and harvested page links, then HTTP-verified |
-| Good links wrongly dropped | Sites returning 403 to a default user agent | Browser UA, GET not HEAD, 403 recorded as `unverified` not `dead` |
-| Agent loops without finishing | No natural stopping point on a vague item | Hard budget of 8 tool calls / 3 searches per item |
+|- Hallucinated resource links | Model generating URLs from recall | URLs taken only from search results and harvested page links, then HTTP-verified |
+|- Good links wrongly dropped | Sites returning 403 to a default user agent | Browser UA, GET not HEAD, 403 recorded as `unverified` not `dead` |
+|- Agent loops without finishing | No natural stopping point on a vague item | Hard budget of 8 tool calls / 3 searches per item |
 | Fewer than 3 resources survive | Validation drops candidates | Publish what survived, mark `incomplete` — never pad with unverified links |
-| Unbounded topics | Scope too broad to research meaningfully | Agent narrows to one entry point, flagged on the page |
-| Filler treated as a task | Thinking aloud mid-dump | Explicit `noise` type, excluded at publish |
-| Recording lost to a failed API call | Network failure after capture | `.wav` retained on disk, path printed |
-| Notion 404 on a page that exists | Integration not shared with the parent page | Documented in setup; explicit error message |
+|- Unbounded topics | Scope too broad to research meaningfully | Agent narrows to one entry point, flagged on the page |
+|- Recording lost to a failed API call | Network failure after capture | `.wav` retained on disk, path printed |
+
 
 ---
 
